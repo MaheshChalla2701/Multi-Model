@@ -53,7 +53,6 @@ def calibrate_extraction(extraction: MedicalExtraction) -> dict:
             },
         },
         "findings":             calibrated_findings,
-        "number_of_slices":     extraction.number_of_slices,
         "retrieval_queries":    extraction.retrieval_queries,
         "recommended_pipeline": extraction.recommended_pipeline,
     }

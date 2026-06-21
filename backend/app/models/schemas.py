@@ -139,9 +139,6 @@ class MedicalExtraction(BaseModel):
             "Empty list if no abnormal findings are visible."
         )
     )
-    number_of_slices: int = Field(
-        description="For MRI scans, the number of slices identified in the image collage. Return 1 if it's a single slice or for non-MRI modalities."
-    )
     retrieval_queries: List[str] = Field(
         description=(
             "Flat list of search queries for a vector database, generated from all findings. "

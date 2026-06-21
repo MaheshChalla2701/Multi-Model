@@ -11,17 +11,28 @@ export default function Home() {
   const [result, setResult] = useState<object | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [gridPreviewUrl, setGridPreviewUrl] = useState<string | null>(null);
+  const [gridLoading, setGridLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) {
-      setError("Please upload an image file.");
+    const isDicom = file.name.toLowerCase().endsWith(".dcm") || file.type === "application/dicom";
+    if (!file.type.startsWith("image/") && !isDicom) {
+      setError("Please upload an image or DICOM (.dcm) file.");
+      return;
+    }
+    
+    // 50MB file size limit
+    if (file.size > 50 * 1024 * 1024) {
+      setError("File is too large. Maximum size is 50MB.");
       return;
     }
     setSelectedFile(file);
     setError(null);
     setResult(null);
-    setPreview(URL.createObjectURL(file));
+    setGridPreviewUrl(null);
+    // DICOM files can't be previewed as images
+    setPreview(isDicom ? null : URL.createObjectURL(file));
   }, []);
 
   const handleDrop = useCallback(
@@ -65,7 +76,29 @@ export default function Home() {
     setResult(null);
     setError(null);
     setPatientContext("");
+    setGridPreviewUrl(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const previewGrid = async () => {
+    if (!selectedFile) return;
+    setGridLoading(true);
+    setGridPreviewUrl(null);
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    try {
+      const res = await fetch("http://localhost:8000/api/grid-preview", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) throw new Error("Grid preview failed");
+      const blob = await res.blob();
+      setGridPreviewUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Grid preview error");
+    } finally {
+      setGridLoading(false);
+    }
   };
 
   const copyJson = () => {
@@ -135,7 +168,7 @@ export default function Home() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,.dcm,application/dicom"
               className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
             />
@@ -154,11 +187,23 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+            ) : selectedFile ? (
+              <div className="text-center p-6 space-y-2">
+                <div className="text-3xl">🗂️</div>
+                <p className="text-slate-300 font-sans text-sm font-semibold">{selectedFile.name}</p>
+                <p className="text-slate-500 text-xs font-sans">DICOM file selected — preview not available</p>
+                <button
+                  onClick={(e) => { e.stopPropagation(); reset(); }}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 font-sans"
+                >
+                  Remove
+                </button>
+              </div>
             ) : (
               <div className="text-center p-6 space-y-2">
                 <div className="text-3xl">🩻</div>
                 <p className="text-slate-400 font-sans text-sm">Drop scan or <span className="text-cyan-400 underline">click to upload</span></p>
-                <p className="text-slate-600 text-xs font-sans">X-Ray · MRI · CT · Ultrasound</p>
+                <p className="text-slate-600 text-xs font-sans">X-Ray · MRI · CT · Ultrasound · DICOM</p>
               </div>
             )}
           </div>
@@ -197,6 +242,26 @@ export default function Home() {
                 </>
               ) : "▶  Run Analysis"}
             </button>
+            <button
+              onClick={previewGrid}
+              disabled={!selectedFile || gridLoading}
+              className={`
+                py-2.5 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 font-sans border
+                ${!selectedFile || gridLoading
+                  ? "border-white/10 text-slate-600 cursor-not-allowed bg-white/5"
+                  : "border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-400"}
+              `}
+            >
+              {gridLoading ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Generating…
+                </>
+              ) : "🗳️  Preview Grid"}
+            </button>
           </div>
         </div>
 
@@ -234,6 +299,39 @@ export default function Home() {
               dangerouslySetInnerHTML={{
                 __html: highlight(JSON.stringify(result, null, 2)),
               }}
+            />
+          </div>
+        )}
+
+        {/* Grid Preview */}
+        {gridPreviewUrl && (
+          <div className="rounded-xl border border-white/10 bg-[#161b22] overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/10 bg-[#1c2128]">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500 text-xs">POST</span>
+                <span className="text-slate-400 text-xs">/api/grid-preview</span>
+                <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                  Grid Overlay
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-sans">
+                  🟢 separators &nbsp; 🟡 panels
+                </span>
+                <button
+                  onClick={() => setGridPreviewUrl(null)}
+                  className="text-xs px-3 py-1 rounded-lg border border-white/10 hover:bg-white/5 transition-colors text-slate-400 hover:text-slate-200 font-sans"
+                >
+                  ✕ Close
+                </button>
+              </div>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={gridPreviewUrl}
+              alt="Grid preview"
+              className="w-full object-contain p-4"
+              style={{ maxHeight: "70vh" }}
             />
           </div>
         )}

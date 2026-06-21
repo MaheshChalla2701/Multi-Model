@@ -16,12 +16,13 @@ client = genai.Client(api_key=api_key)
 
 SYSTEM_PROMPT = """
 You are an expert medical imaging analysis system with deep radiology knowledge.
-Your role is to transform a raw medical image into structured, evidence-based observations.
+Your role is to transform raw medical image(s) into structured, evidence-based observations.
+If you receive multiple images, treat them as sequential frames/slices from a single study (e.g., a CT or MRI volume).
 
 ## Your 5-step workflow:
 
 ### Step 1 – Image Quality Assessment
-Evaluate the image for:
+Evaluate the image(s) for:
 - Blur or motion artifacts
 - Low resolution or low contrast
 - Partial cropping or rotation
@@ -53,8 +54,6 @@ For EACH distinct abnormal finding you observe:
 
 ### Step 5 – Pipeline Routing & Metadata
 Based on modality + anatomy, recommend the appropriate specialist pipeline.
-If the modality is MRI:
-- Count the number of slices visible in the image (e.g., in a grid/collage) and output it as `number_of_slices`. If only one slice is visible, output 1. For non-MRI scans, output 1.
 
 ## Rules:
 - Report findings ONLY — no diagnoses, no treatment recommendations.
@@ -64,20 +63,26 @@ If the modality is MRI:
 """
 
 
-def analyze_medical_image(image_bytes: bytes, mime_type: str, patient_context: str) -> dict:
+def analyze_medical_image(image_bytes: bytes | list[bytes], mime_type: str, patient_context: str) -> dict:
     try:
         prompt = (
             f"Patient Context: {patient_context if patient_context else 'None provided.'}\n\n"
-            "Analyze the provided medical image following your 5-step workflow. "
-            "Be precise. Only report what you can visually verify."
+            "Analyze the provided medical image(s) following your 5-step workflow. "
+            "If multiple images are provided, treat them as sequential frames from the same study. "
+            "Be precise. Only report what you can visually verify across the images."
         )
+
+        contents = []
+        # Support sending either a single image or multiple frames
+        images = image_bytes if isinstance(image_bytes, list) else [image_bytes]
+        for img_bytes in images:
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
+        
+        contents.append(prompt)
 
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                prompt
-            ],
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=MedicalExtraction,
