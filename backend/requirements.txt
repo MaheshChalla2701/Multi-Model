@@ -4,3 +4,6 @@ google-genai
 pydantic>=2.0.0
 python-multipart
 python-dotenv
+pydicom
+Pillow
+numpy

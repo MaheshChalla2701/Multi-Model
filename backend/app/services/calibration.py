@@ -42,16 +42,7 @@ def calibrate_extraction(extraction: MedicalExtraction) -> dict:
     return {
         "modality":             extraction.modality,
         "anatomy":              extraction.anatomy,
-        "image_quality": {
-            "usable":             extraction.image_quality.usable,
-            "issues": {
-                "blur":         extraction.image_quality.issues.blur,
-                "low_contrast": extraction.image_quality.issues.low_contrast,
-                "glare":        extraction.image_quality.issues.glare,
-                "cropped":      extraction.image_quality.issues.cropped,
-            },
-            "reason_if_unusable": extraction.image_quality.reason_if_unusable,
-        },
+
         "uncertainty_sources": {
             "image_quality_issues":     extraction.uncertainty_sources.image_quality_issues,
             "visual_evidence_strength": f"{extraction.uncertainty_sources.visual_evidence_strength}%",
@@ -62,6 +53,7 @@ def calibrate_extraction(extraction: MedicalExtraction) -> dict:
             },
         },
         "findings":             calibrated_findings,
+        "number_of_slices":     extraction.number_of_slices,
         "retrieval_queries":    extraction.retrieval_queries,
         "recommended_pipeline": extraction.recommended_pipeline,
     }

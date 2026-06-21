@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Enervara — Medical Imaging AI",
   description:
-    "AI-powered medical image analysis using Gemini. Upload a scan to get structured radiological findings with calibrated confidence scores.",
+    "AI-powered medical image analysis using ENERVARA. Upload a scan to get structured radiological findings with calibrated confidence scores.",
 };
 
 export default function RootLayout({

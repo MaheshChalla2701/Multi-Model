@@ -64,10 +64,10 @@ class OutOfDistribution(BaseModel):
 
 
 class UncertaintySources(BaseModel):
-    image_quality_issues: bool = Field(
+    image_quality_issues: List[str] = Field(
         description=(
-            "True if any image quality degradation (blur, low contrast, glare, cropping) "
-            "is present that may impact finding detection accuracy."
+            "List of specific image quality issues present (e.g., 'blur', 'low contrast', "
+            "'glare', 'cropped image'). Empty list if the image is clean."
         )
     )
     visual_evidence_strength: int = Field(
@@ -138,6 +138,9 @@ class MedicalExtraction(BaseModel):
             "and the specific visual evidence supporting it. "
             "Empty list if no abnormal findings are visible."
         )
+    )
+    number_of_slices: int = Field(
+        description="For MRI scans, the number of slices identified in the image collage. Return 1 if it's a single slice or for non-MRI modalities."
     )
     retrieval_queries: List[str] = Field(
         description=(

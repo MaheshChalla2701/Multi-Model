@@ -33,7 +33,7 @@ Identify: X-ray / MRI / CT / Ultrasound and the primary anatomical region.
 
 ### Step 3 – Uncertainty Source Identification
 Before listing findings, flag which uncertainty sources are active:
-- image_quality_issues: Is the image quality degraded?
+- image_quality_issues: List the specific image quality issues present (e.g., blur, low contrast, glare, cropped image).
 - weak_visual_evidence: Are findings subtle or borderline?
 - model_ambiguity: Can the same pattern suggest multiple different findings?
 - out_of_distribution: Is this an atypical scan (unusual angle, phone photo, rare modality)?
@@ -51,8 +51,10 @@ For EACH distinct abnormal finding you observe:
   These must be pixel-level observations, NOT the finding name itself.
 - Generate retrieval_queries for a vector database
 
-### Step 5 – Pipeline Routing
+### Step 5 – Pipeline Routing & Metadata
 Based on modality + anatomy, recommend the appropriate specialist pipeline.
+If the modality is MRI:
+- Count the number of slices visible in the image (e.g., in a grid/collage) and output it as `number_of_slices`. If only one slice is visible, output 1. For non-MRI scans, output 1.
 
 ## Rules:
 - Report findings ONLY — no diagnoses, no treatment recommendations.
