@@ -1,280 +1,233 @@
+import asyncio
+import os
+import uuid
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import io
-import pydicom
-import numpy as np
+from fastapi.responses import Response
 
 from app.services.gemini_service import analyze_medical_image
+from app.services import router as domain_router
+from app.services.qdrant_service import search_evidence
+from app.services.neo4j_service import query_knowledge_graph
+from app.services.inference_engine import synthesize_final_report
+from app.services.safety_service import verify_report_safety
+from app.services.audit_service import log_case
+from app.utils.dicom_utils import read_dicom_bytes
+from app.utils.slicing import assess_objective_quality, count_grid_slices, draw_grid_on_image
+
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Read allowed origins from env so this works in dev, staging, and production
+# without code changes. Comma-separate multiple origins in the env var.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app = FastAPI(title="Medical Understanding API")
 
-# Allow CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-import cv2
+# Maximum accepted file size (50 MB) enforced server-side
+MAX_FILE_BYTES = 50 * 1024 * 1024
 
-def assess_objective_quality(image_bytes: bytes) -> dict:
-    """
-    Calculates objective image quality metrics using OpenCV.
-    - Blur Score: Variance of Laplacian. Lower = blurrier (typically < 100 is blurry).
-    - Contrast Score: Standard deviation of pixel intensities. Lower = flat/washed out.
-    - Brightness: Mean pixel intensity (0-255).
-    """
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return {}
-
-        blur_score = cv2.Laplacian(img, cv2.CV_64F).var()
-        mean, stddev = cv2.meanStdDev(img)
-        contrast_score = stddev[0][0]
-        brightness_score = mean[0][0]
-
-        return {
-            "blur_score": round(blur_score, 2),
-            "contrast_score": round(contrast_score, 2),
-            "brightness_score": round(brightness_score, 2),
-            "is_mathematically_blurry": bool(blur_score < 100),
-            "is_mathematically_low_contrast": bool(contrast_score < 30)
-        }
-    except Exception:
-        return {}
-
-
-def _get_segments(proj: np.ndarray) -> list[tuple[int, int, bool]]:
-    """
-    Returns a list of (start, end, is_separator) tuples for each content run.
-
-    Uses a RELATIVE threshold: a row/col is treated as a separator if its
-    brightness is in the lowest 30% of the observed brightness range.
-    This adapts automatically to dark-background (black film) and
-    colored-background (blue/teal) MRI collages.
-    """
-    total = len(proj)
-    min_sep     = max(1, int(total * 0.005))   # separator ≥ 0.5% of axis
-    min_content = max(2, int(total * 0.05))    # content panel ≥ 5.0% of axis
-
-    lo, hi = float(np.min(proj)), float(np.max(proj))
-    # Relative separator threshold: bottom 15% of brightness range
-    if hi > lo:
-        sep_thresh = lo + (hi - lo) * 0.15
-    else:
-        sep_thresh = lo  # uniform image — nothing to separate
-
-    is_sep = proj <= sep_thresh
-
-    # Run-length encode
-    runs: list[tuple[bool, int]] = []
-    cur, cnt = bool(is_sep[0]), 1
-    for val in is_sep[1:]:
-        if bool(val) == cur:
-            cnt += 1
-        else:
-            runs.append((cur, cnt))
-            cur, cnt = bool(val), 1
-    runs.append((cur, cnt))
-
-    # Convert to (start, end, is_sep) and filter noise
-    result = []
-    pos = 0
-    for sep, ln in runs:
-        end = pos + ln
-        if (sep and ln >= min_sep) or (not sep and ln >= min_content):
-            result.append((pos, end, sep))
-        pos = end
-    return result
-
-
-
-def count_grid_slices(image_bytes: bytes) -> int:
-    """
-    Counts image panels in a medical scan collage using OpenCV.
-    Uses Otsu thresholding + projection profiles + run-length encoding.
-    Returns 1 for a single-panel image.
-    """
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return 1
-
-        h, w = img.shape
-        blurred = cv2.GaussianBlur(img, (5, 5), 0)
-        _, binary = cv2.threshold(blurred, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        row_proj = binary.sum(axis=1).astype(float) / w
-        col_proj = binary.sum(axis=0).astype(float) / h
-
-        rows = max(1, sum(1 for _, _, sep in _get_segments(row_proj) if not sep))
-        cols = max(1, sum(1 for _, _, sep in _get_segments(col_proj) if not sep))
-
-        return max(1, rows * cols)
-    except Exception:
-        return 1
-
-
-def draw_grid_on_image(image_bytes: bytes) -> bytes:
-    """
-    Upscales the image, then draws grid lines on detected slice boundaries.
-    Green lines = separator midpoints, cyan boxes = content panels.
-    Returns a high-resolution PNG.
-    """
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("Could not decode image")
-
-    h, w = img.shape[:2]
-
-    # Upscale to at least 900px on the longest side for crisp display
-    target = 900
-    scale = max(1.0, target / max(h, w))
-    if scale > 1.0:
-        new_w, new_h = int(w * scale), int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        h, w = img.shape[:2]
-
-    gray    = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, binary = cv2.threshold(blurred, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    row_segs = _get_segments(binary.sum(axis=1).astype(float) / w)
-    col_segs = _get_segments(binary.sum(axis=0).astype(float) / h)
-
-    annotated = img.copy()
-    line_w = max(1, int(min(h, w) * 0.003))   # line thickness scales with image
-
-    # Draw horizontal separator lines in green
-    for start, end, is_sep in row_segs:
-        if is_sep:
-            mid = (start + end) // 2
-            cv2.line(annotated, (0, mid), (w, mid), (0, 220, 80), line_w)
-
-    # Draw vertical separator lines in green
-    for start, end, is_sep in col_segs:
-        if is_sep:
-            mid = (start + end) // 2
-            cv2.line(annotated, (mid, 0), (mid, h), (0, 220, 80), line_w)
-
-    # Draw cyan bounding boxes around each detected content panel
-    content_rows = [(s, e) for s, e, sep in row_segs if not sep]
-    content_cols = [(s, e) for s, e, sep in col_segs if not sep]
-    for rs, re in content_rows:
-        for cs, ce in content_cols:
-            cv2.rectangle(annotated, (cs, rs), (ce - 1, re - 1), (0, 220, 220), line_w)
-
-    # Label total count in top-left with readable font size
-    total = max(1, len(content_rows) * len(content_cols))
-    font_scale = max(0.5, min(h, w) / 500)
-    cv2.putText(annotated, f"Slices: {total}", (max(6, line_w * 2), int(26 * font_scale)),
-                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), max(1, line_w), cv2.LINE_AA)
-
-    _, buf = cv2.imencode(".png", annotated, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-    return buf.tobytes()
-
-
-
-@app.post("/api/analyze-scan")
-async def analyze_scan(
-    file: UploadFile = File(...),
-    patient_context: str = Form("")
-):
-    is_dicom = file.content_type == "application/dicom" or (file.filename and file.filename.lower().endswith(".dcm"))
-    if not file.content_type.startswith("image/") and not is_dicom:
-        raise HTTPException(status_code=400, detail="File must be an image or DICOM.")
-    
-    try:
-        image_bytes = await file.read()
-        mime_type = file.content_type
-        extracted_slices = None
-        gemini_payload = image_bytes
-        
-        if is_dicom:
-            try:
-                # Load DICOM from bytes
-                dicom_ds = pydicom.dcmread(io.BytesIO(image_bytes))
-                
-                # Extract number of slices
-                extracted_slices = int(getattr(dicom_ds, "NumberOfFrames", 1))
-                import cv2
-                
-                # Get pixel array
-                pixel_array = dicom_ds.pixel_array
-                
-                if len(pixel_array.shape) > 2 and extracted_slices > 1:
-                    # Multi-frame DICOM: Sample up to 10 evenly spaced frames
-                    num_samples = min(extracted_slices, 10)
-                    indices = np.linspace(0, extracted_slices - 1, num_samples, dtype=int)
-                    
-                    frames_bytes = []
-                    for idx in indices:
-                        frame = pixel_array[idx]
-                        if np.max(frame) > 0:
-                            frame = frame - np.min(frame)
-                            frame = (frame / np.max(frame)) * 255.0
-                        frame = frame.astype(np.uint8)
-                        _, img_buf = cv2.imencode(".png", frame)
-                        frames_bytes.append(img_buf.tobytes())
-                    
-                    # Pass the list of frames to Gemini
-                    gemini_payload = frames_bytes
-                    # Keep the middle frame for objective metrics
-                    image_bytes = frames_bytes[len(frames_bytes) // 2]
-                else:
-                    # Single frame
-                    if np.max(pixel_array) > 0:
-                        pixel_array = pixel_array - np.min(pixel_array)
-                        pixel_array = (pixel_array / np.max(pixel_array)) * 255.0
-                    pixel_array = pixel_array.astype(np.uint8)
-                    _, img_buf = cv2.imencode(".png", pixel_array)
-                    image_bytes = img_buf.tobytes()
-                    gemini_payload = image_bytes
-                    
-                mime_type = "image/png"
-            except Exception as dcm_err:
-                raise HTTPException(status_code=400, detail=f"Failed to process DICOM file: {str(dcm_err)}")
-
-        result = analyze_medical_image(gemini_payload, mime_type, patient_context)
-        
-        # Override the slice count with exact DICOM metadata if available,
-        # otherwise count programmatically from the image pixel data.
-        if is_dicom and extracted_slices is not None:
-            result["number_of_slices"] = extracted_slices
-        else:
-            result["number_of_slices"] = count_grid_slices(image_bytes)
-            
-        # Add objective OpenCV quality metrics
-        result["objective_quality_metrics"] = assess_objective_quality(image_bytes)
-            
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "Medical Understanding API"}
 
 
+@app.post("/api/analyze-scan")
+async def analyze_scan(
+    file: UploadFile = File(...),
+    age: str = Form(""),
+    sex: str = Form(""),
+    symptoms: str = Form(""),
+):
+    """
+    Primary analysis endpoint (Layers 1 – 10).
+
+    Accepts a medical image or DICOM file plus structured patient context.
+    Extracts DICOM metadata & pixels, applies correct windowing, and routes
+    the study through the full multi-layer AI pipeline.
+    """
+    is_dicom = file.content_type == "application/dicom" or (
+        file.filename and file.filename.lower().endswith(".dcm")
+    )
+    if not file.content_type.startswith("image/") and not is_dicom:
+        raise HTTPException(status_code=400, detail="File must be an image or DICOM.")
+
+    try:
+        image_bytes = await file.read()
+
+        # ── Server-side file size guard ───────────────────────────────────────
+        if len(image_bytes) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 50 MB limit.")
+
+        mime_type       = file.content_type
+        extracted_slices: int | None = None
+        gemini_payload: bytes | list[bytes] = image_bytes
+        quality_frame: bytes = image_bytes
+        dicom_metadata: dict = {}
+
+        # ── DICOM path ────────────────────────────────────────────────────────
+        if is_dicom:
+            try:
+                dicom_metadata, frames_bytes, quality_frame = read_dicom_bytes(image_bytes)
+                extracted_slices = int(dicom_metadata["number_of_frames"])
+                gemini_payload   = frames_bytes if len(frames_bytes) > 1 else frames_bytes[0]
+                mime_type        = "image/png"
+            except Exception as dcm_err:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to process DICOM file: {dcm_err}",
+                )
+
+        # ── Build enriched patient context for Gemini (Layer 1) ──────────────
+        context_parts: list[str] = []
+
+        resolved_age = age.strip() or dicom_metadata.get("patient_age", "")
+        resolved_sex = sex.strip() or dicom_metadata.get("patient_sex", "")
+
+        if resolved_age:
+            context_parts.append(f"Age: {resolved_age}")
+        if resolved_sex:
+            context_parts.append(f"Sex: {resolved_sex}")
+        if symptoms.strip():
+            context_parts.append(f"Symptoms: {symptoms.strip()}")
+
+        # Include DICOM study/series context for Gemini
+        for key, label in (
+            ("study_description",  "Study Description"),
+            ("series_description", "Series Description"),
+            ("body_part",          "Body Part (from DICOM)"),
+            ("modality",           "Modality (from DICOM)"),
+        ):
+            val = dicom_metadata.get(key, "")
+            if val and val != "Unknown":
+                context_parts.append(f"{label}: {val}")
+
+        patient_context = "\n".join(context_parts) if context_parts else "None provided."
+
+        # ── Layer 1–3: Gemini generalist analysis ─────────────────────────────
+        # analyze_medical_image is a sync function — run it in a thread pool
+        # so it never blocks FastAPI's async event loop.
+        result: dict = await asyncio.to_thread(
+            analyze_medical_image, gemini_payload, mime_type, patient_context
+        )
+
+        # Slice count
+        if is_dicom and extracted_slices is not None:
+            result["number_of_slices"] = extracted_slices
+        else:
+            result["number_of_slices"] = count_grid_slices(quality_frame)
+
+        # Objective OpenCV quality metrics
+        result["objective_quality_metrics"] = assess_objective_quality(quality_frame)
+
+        # Expose DICOM header in response for transparency
+        if dicom_metadata:
+            result["dicom_metadata"] = dicom_metadata
+
+        # ── Layers 4–5: Domain Routing & Specialist Pipeline ──────────────────
+        recommended_pipeline = result.get("recommended_pipeline", "")
+        layer3_findings = [
+            f.get("finding", "") for f in result.get("findings", []) if f.get("finding")
+        ]
+
+        pipeline_output = None
+        try:
+            pipeline_output = domain_router.route(
+                recommended_pipeline=recommended_pipeline,
+                frames=gemini_payload,
+                mime_type=mime_type,
+                layer3_findings=layer3_findings,
+                patient_context=patient_context,
+            )
+            result["specialist_pipeline"] = pipeline_output.model_dump()
+        except Exception as pipeline_err:
+            result["specialist_pipeline"] = {
+                "pipeline_name": recommended_pipeline,
+                "error": str(pipeline_err),
+                "key_findings": layer3_findings,
+            }
+
+        # ── Layers 6–7: Evidence Collection (Qdrant + Neo4j) ─────────────────
+        try:
+            retrieval_queries = (
+                pipeline_output.retrieval_queries
+                if pipeline_output is not None
+                else layer3_findings
+            )
+            historical_evidence, graph_knowledge = await asyncio.gather(
+                search_evidence(retrieval_queries),
+                query_knowledge_graph(retrieval_queries),
+            )
+            result["historical_evidence"] = historical_evidence
+            result["graph_knowledge"]     = graph_knowledge
+        except Exception as db_err:
+            print(f"Database Retrieval Error: {db_err}")
+            result["historical_evidence"] = []
+            result["graph_knowledge"]     = []
+
+        # ── Layers 8–10: Inference Engine, Safety, and Audit ─────────────────
+        try:
+            raw_final_report = await synthesize_final_report(
+                generalist_data=result,
+                specialist_data=result.get("specialist_pipeline", {}),
+                historical_cases=result.get("historical_evidence", []),
+                graph_guidelines=result.get("graph_knowledge", []),
+            )
+
+            safe_final_report = verify_report_safety(raw_final_report)
+            result["final_diagnosis_report"] = safe_final_report
+
+            case_id = str(uuid.uuid4())
+            result["case_id"] = case_id
+
+            asyncio.create_task(
+                log_case(
+                    case_id=case_id,
+                    request_data={
+                        "modality": dicom_metadata.get("modality") if is_dicom else "Unknown",
+                        "anatomy":  patient_context,
+                        "image_base64": True,
+                    },
+                    final_report=safe_final_report,
+                    safety_status=safe_final_report.get("safety_verified", False),
+                )
+            )
+        except Exception as engine_err:
+            print(f"Inference Engine Error: {engine_err}")
+            result["final_diagnosis_report"] = {"error": "Failed to generate final report"}
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/grid-preview")
 async def grid_preview(file: UploadFile = File(...)):
     """Returns the uploaded image with detected slice grid lines drawn on it (PNG)."""
-    from fastapi.responses import Response
-
-    is_dicom = file.content_type == "application/dicom" or (file.filename and file.filename.lower().endswith(".dcm"))
+    is_dicom = file.content_type == "application/dicom" or (
+        file.filename and file.filename.lower().endswith(".dcm")
+    )
     if not file.content_type.startswith("image/") and not is_dicom:
         raise HTTPException(status_code=400, detail="File must be an image or DICOM.")
     try:
         image_bytes = await file.read()
+        if len(image_bytes) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 50 MB limit.")
         annotated_png = draw_grid_on_image(image_bytes)
         return Response(content=annotated_png, media_type="image/png")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

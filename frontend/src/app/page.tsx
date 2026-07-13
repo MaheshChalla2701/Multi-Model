@@ -2,11 +2,15 @@
 
 import { useState, useRef, useCallback } from "react";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 export default function Home() {
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [patientContext, setPatientContext] = useState("");
+  const [age, setAge] = useState("");
+  const [sex, setSex] = useState("");
+  const [symptoms, setSymptoms] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<object | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,10 +57,12 @@ export default function Home() {
 
     const formData = new FormData();
     formData.append("file", selectedFile);
-    formData.append("patient_context", patientContext);
+    formData.append("age", age);
+    formData.append("sex", sex);
+    formData.append("symptoms", symptoms);
 
     try {
-      const res = await fetch("http://localhost:8000/api/analyze-scan", {
+      const res = await fetch(`${API_BASE}/api/analyze-scan`, {
         method: "POST",
         body: formData,
       });
@@ -75,7 +81,9 @@ export default function Home() {
     setPreview(null);
     setResult(null);
     setError(null);
-    setPatientContext("");
+    setAge("");
+    setSex("");
+    setSymptoms("");
     setGridPreviewUrl(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -87,7 +95,7 @@ export default function Home() {
     const formData = new FormData();
     formData.append("file", selectedFile);
     try {
-      const res = await fetch("http://localhost:8000/api/grid-preview", {
+      const res = await fetch(`${API_BASE}/api/grid-preview`, {
         method: "POST",
         body: formData,
       });
@@ -208,19 +216,49 @@ export default function Home() {
             )}
           </div>
 
-          {/* Context + Button */}
+          {/* Patient Context - Structured Fields */}
           <div className="flex flex-col gap-3">
-            <div className="flex-1 rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
-              <label className="text-xs text-slate-500 font-sans uppercase tracking-wider">
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-3">
+              <label className="text-xs text-slate-500 font-sans uppercase tracking-wider block">
                 Patient Context <span className="normal-case">(optional)</span>
               </label>
-              <textarea
-                value={patientContext}
-                onChange={(e) => setPatientContext(e.target.value)}
-                placeholder="e.g. 67-year-old male, smoker, chest pain..."
-                rows={5}
-                className="w-full resize-none bg-transparent text-slate-300 placeholder:text-slate-700 focus:outline-none text-xs leading-relaxed"
-              />
+              {/* Age + Sex row */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-600 font-sans">Age</label>
+                  <input
+                    type="text"
+                    value={age}
+                    onChange={(e) => setAge(e.target.value)}
+                    placeholder="e.g. 65"
+                    className="w-full bg-transparent border border-white/10 rounded-lg px-3 py-2 text-slate-300 placeholder:text-slate-700 focus:outline-none focus:border-cyan-500/50 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-600 font-sans">Sex</label>
+                  <select
+                    value={sex}
+                    onChange={(e) => setSex(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2 text-slate-300 focus:outline-none focus:border-cyan-500/50 text-xs font-sans"
+                  >
+                    <option value="">Select...</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+              </div>
+              {/* Symptoms */}
+              <div className="space-y-1">
+                <label className="text-xs text-slate-600 font-sans">Symptoms</label>
+                <textarea
+                  value={symptoms}
+                  onChange={(e) => setSymptoms(e.target.value)}
+                  placeholder="e.g. chest pain, shortness of breath, chronic smoker..."
+                  rows={3}
+                  className="w-full resize-none bg-transparent border border-white/10 rounded-lg px-3 py-2 text-slate-300 placeholder:text-slate-700 focus:outline-none focus:border-cyan-500/50 text-xs leading-relaxed font-mono"
+                />
+              </div>
             </div>
             <button
               onClick={analyze}

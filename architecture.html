@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Architecture Diagram (Academic Style)</title>
+    <link href="https://fonts.googleapis.com/css2?family=Times+New+Roman&display=swap" rel="stylesheet">
+    <!-- Load Mermaid.js -->
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ 
+            startOnLoad: true, 
+            theme: 'base',
+            themeVariables: {
+                background: '#ffffff',
+                primaryColor: '#ffffff',
+                primaryTextColor: '#000000',
+                primaryBorderColor: '#000000',
+                lineColor: '#000000',
+                secondaryColor: '#ffffff',
+                tertiaryColor: '#ffffff',
+                clusterBkg: '#f5f5f5',
+                clusterBorder: '#000000',
+                fontFamily: 'arial, sans-serif'
+            },
+            flowchart: {
+                curve: 'basis', /* smooth curves for arrows like the transformer diagram */
+                nodeSpacing: 50,
+                rankSpacing: 50
+            }
+        });
+    </script>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --text-main: #000000;
+        }
+
+        body {
+            font-family: 'Times New Roman', serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-family: 'Times New Roman', serif;
+        }
+        
+        .subtitle {
+            text-align: center;
+            margin-bottom: 30px;
+            max-width: 800px;
+            line-height: 1.6;
+            font-style: italic;
+        }
+
+        .diagram-container {
+            width: 100%;
+            max-width: 1100px;
+            background: #ffffff;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            overflow-x: auto;
+        }
+
+        @media print {
+            body {
+                display: block;
+                padding: 0;
+                margin: 0;
+            }
+            .diagram-container {
+                display: block;
+                overflow: visible !important;
+                padding: 0;
+                margin: 0;
+                box-shadow: none;
+                border: none;
+            }
+            .mermaid {
+                page-break-inside: avoid;
+                text-align: center;
+            }
+            .mermaid svg {
+                max-width: 100% !important;
+                max-height: 95vh !important;
+                height: auto !important;
+                display: inline-block;
+            }
+        }
+    </style>
+</head>
+<body>
+
+
+
+    <div class="diagram-container">
+        <div class="mermaid">
+            flowchart TD
+                %% Styles matching the Transformer paper pastel theme with thick black borders
+                classDef action fill:#dae8fc,stroke:#000000,stroke-width:2px,color:#000000,rx:5px,ry:5px;
+                classDef decision fill:#fff2cc,stroke:#000000,stroke-width:2px,color:#000000,rx:5px,ry:5px;
+                classDef startEnd fill:#f8cecc,stroke:#000000,stroke-width:2px,color:#000000,rx:5px,ry:5px;
+                classDef layerFill fill:#d5e8d4,stroke:#000000,stroke-width:2px,color:#000000,rx:5px,ry:5px;
+                classDef error fill:#ffe6cc,stroke:#000000,stroke-width:2px,color:#000000,rx:5px,ry:5px;
+
+                Start((Start)):::startEnd --> L1_Input
+
+                subgraph Layer1 ["Layer 1: User Upload"]
+                    L1_Input[Receive Input]:::action
+                end
+
+                L1_Input --> IsDicom{Input Type?}:::decision
+
+                subgraph Layer2 ["Layer 2: Validation Layer"]
+                    IsDicom -- "DICOM" --> L2_Extract[Extract Image Features & Metadata]:::action
+                    L2_Extract --> L2_Check[Check Supported Formats & Image Quality]:::action
+                    IsDicom -- "Standard Image" --> L2_Check
+                    L2_Check --> IsValid{Is Valid?}:::decision
+                end
+
+                IsValid -- "No" --> Reject((Reject Input)):::error
+
+                IsValid -- "Yes" --> L3_Category
+
+                subgraph Layer3 ["Layer 3: Medical Understanding"]
+                    L3_Category[Determine Category: CT, MRI, X-Ray]:::action
+                    L3_Category --> L3_Slices{Has Multiple Slices?}:::decision
+                    L3_Slices -- "Yes" --> L3_Grid[Transform slices into Grid Form]:::action
+                    L3_Grid --> L3_CollectFrames[Bundle all frames]:::action
+                    L3_Slices -- "No" --> L3_CollectFrames
+                    L3_CollectFrames --> L3_Findings[Extract initial findings from frames]:::action
+                end
+
+                L3_Findings --> L4_Route
+
+                subgraph Layer4 ["Layer 4: Domain Router"]
+                    L4_Route{Route by Category}:::decision
+                end
+
+                L4_Route -- "CT" --> L5_Analyze
+                L4_Route -- "MRI" --> L5_Analyze
+                L4_Route -- "X-Ray" --> L5_Analyze
+
+                subgraph Layer5 ["Layer 5: Specialist Pipeline"]
+                    L5_Analyze[Analyze each frame]:::action
+                    L5_Analyze --> L5_Segment[Segment abnormalities in frames]:::action
+                end
+
+                L5_Segment --> L6_Query
+
+                subgraph Layer6 ["Layer 6: Evidence Collection (Qdrant)"]
+                    L6_Query[Query Vector DB with Pipeline Findings]:::action
+                    L6_Query --> L6_Retrieve[Retrieve Similar Cases & Clinical Guidelines]:::action
+                end
+
+                L6_Retrieve --> L7_Map
+
+                subgraph Layer7 ["Layer 7: Knowledge Graph (Neo4j)"]
+                    L7_Map[Query Graph DB with Pipeline Findings]:::action
+                    L7_Map --> L7_Traverse[Map Finding -> Disease -> Symptoms]:::action
+                end
+
+                L7_Traverse --> L8_Consolidate
+
+                subgraph Layer8 ["Layer 8: Disease Inference Engine"]
+                    L8_Consolidate[Consolidate Pipeline Evidence, Qdrant context & Neo4j graph data]:::action
+                    L8_Consolidate --> L8_Rank[Calculate Disease Ranking & Confidence Scores]:::action
+                    L8_Rank --> L8_Output[Generate Differential Diagnosis]:::action
+                end
+
+                L8_Output --> L9_Confidence
+
+                subgraph Layer9 ["Layer 9: Confidence & Safety Layer"]
+                    L9_Confidence[Normalize Confidence & Score Risk]:::action
+                    L9_Confidence --> L9_Safety[Check Contradictions, Missing Evidence, OOD]:::action
+                    L9_Safety --> L9_Decision{Is Review Required?}:::decision
+                end
+
+                L9_Decision -- "Yes (Low Confidence/OOD/Contradiction)" --> L10_Review
+                L9_Decision -- "No (High Confidence, Safe)" --> L11_Audit
+
+                subgraph Layer10 ["Layer 10: Human Review Path"]
+                    L10_Review[Clinician Review Triggered]:::action
+                    L10_Review --> L10_Correct[Clinician approves or corrects output]:::action
+                end
+
+                L10_Correct --> L11_Audit
+
+                subgraph Layer11 ["Layer 11: Audit & Traceability"]
+                    L11_Audit[Store Model/Prompt Versions, Evidence, Confidence, Decisions]:::action
+                end
+
+                L11_Audit --> L12_Adapter
+
+                subgraph Layer12 ["Layer 12: Output Adapter"]
+                    L12_Adapter[Transform reasoning into tailored UX]:::action
+                    L12_Adapter --> UX_Branch{Select View}:::decision
+                end
+
+                UX_Branch -- "Patient" --> L13_Patient
+                UX_Branch -- "Doctor" --> L14_Doctor
+
+                subgraph Layer13_14 ["Views (Layers 13 & 14)"]
+                    L13_Patient[Patient View: Simplified conditions, explanations, next steps]:::action
+                    L14_Doctor[CDS View: Differential Diagnosis, literature, similar cases]:::action
+                end
+
+                L13_Patient --> EndFlow((End)):::startEnd
+                L14_Doctor --> EndFlow
+        </div>
+    </div>
+
+</body>
+</html>

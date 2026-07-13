@@ -1,9 +1,24 @@
-fastapi
-uvicorn
-google-genai
-pydantic>=2.0.0
-python-multipart
-python-dotenv
-pydicom
-numpy
-opencv-python-headless
+# ── Core ────────────────────────────────────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+python-dotenv==1.1.1
+pydantic>=2.0.0,<3.0.0
+
+# ── AI ───────────────────────────────────────────────────────────────────────
+google-genai>=1.15.0
+
+# ── Medical Imaging ──────────────────────────────────────────────────────────
+pydicom==3.0.1
+numpy==2.2.6
+opencv-python-headless==4.11.0.86
+
+# ── Databases ────────────────────────────────────────────────────────────────
+qdrant-client==1.14.3
+neo4j==5.28.1
+motor==3.7.0
+
+# ── Dev / Testing ────────────────────────────────────────────────────────────
+pytest==8.3.5
+pytest-asyncio==0.26.0
+httpx==0.28.1
